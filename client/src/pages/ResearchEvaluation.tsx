@@ -30,6 +30,7 @@ import {
     DialogFooter
 } from "@/components/ui/dialog";
 import { toast } from 'sonner';
+import { apiClient } from '@/lib/api';
 
 // Placeholder content for demo
 const MOCK_PAPER_CONTENT = `ABSTRACT
@@ -73,6 +74,7 @@ export default function ResearchEvaluation() {
             } catch (error) {
                 console.error("Error fetching analysis:", error);
                 toast.error("Failed to load analysis results. Please ensure the backend is running.");
+                setLoading(false);
             }
         };
         fetchData();

@@ -1,11 +1,12 @@
 """FastAPI main application."""
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import uuid
 import asyncio
+import io
 from agents.master_agent import MasterAgent
 from agents.research_agent import ResearchAgent
 from scoring_engine import ScoringEngine
@@ -83,8 +84,12 @@ class AnalysisStatusResponse(BaseModel):
 class ResearchAnnotation(BaseModel):
     tag: str
     content: str
+    tooltip: Optional[str] = None
     reasoning: str
+    suggestion: Optional[str] = None
     position: Dict[str, int]
+    source_name: Optional[str] = None
+    source_link: Optional[str] = None
 
 
 class ResearchOpportunity(BaseModel):
@@ -94,6 +99,9 @@ class ResearchOpportunity(BaseModel):
     relevance_score: int
     difficulty_score: int
     description: str
+    why_matched: Optional[str] = None
+    category: Optional[str] = None
+    deadline: Optional[str] = None
     link: str
 
 
@@ -105,6 +113,15 @@ class FacultyRecommendation(BaseModel):
     link: str
 
 
+class ConfidenceResult(BaseModel):
+    level: str
+    model_certainty: int
+    data_completeness: int
+    document_clarity: int
+    signal_consistency: int
+    summary: str
+
+
 class ResearchStatusResponse(BaseModel):
     analysis_id: str
     status: str
@@ -114,6 +131,8 @@ class ResearchStatusResponse(BaseModel):
     top_opportunities: List[ResearchOpportunity]
     faculty_recommendations: List[FacultyRecommendation]
     confidence_level: str
+    confidence_result: Optional[ConfidenceResult] = None
+    extracted_text: Optional[str] = None
 
 
 # In-memory storage for analysis results (in production, use Firebase)
@@ -163,8 +182,15 @@ async def run_analysis(analysis_id: str, query: str):
         agent_outputs = master_result["agent_outputs"]
         aggregated = master_result["aggregated"]
         
+        # Unwrap agent outputs to 'data' level for scoring engine compatibility
+        # Agents return {"status": "success", "data": {"evidence": ..., "scores": ...}}
+        # Scoring engine expects {"evidence": ..., "scores": ...}
+        unwrapped_outputs = {}
+        for agent_type, output in agent_outputs.items():
+            unwrapped_outputs[agent_type] = output.get("data", {})
+        
         scored_opportunities = scoring_engine.score_opportunities(
-            agent_outputs, 
+            unwrapped_outputs, 
             aggregated.get("opportunities", [])
         )
         
@@ -187,7 +213,9 @@ async def run_analysis(analysis_id: str, query: str):
         })
         
     except Exception as e:
+        import traceback
         print(f"Error in analysis {analysis_id}: {e}")
+        traceback.print_exc()
         analysis_store[analysis_id]["status"] = "error"
         analysis_store[analysis_id]["error"] = str(e)
 
@@ -211,7 +239,9 @@ async def get_analysis_status(analysis_id: str):
             insights = []
             if agent_type in agent_outputs:
                 output = agent_outputs[agent_type]
-                evidence = output.get("evidence", {})
+                # Agent outputs are nested: {"status": "success", "data": {"evidence": {...}}}
+                agent_data = output.get("data", {})
+                evidence = agent_data.get("evidence", {})
                 
                 if agent_type == "patent":
                     if evidence.get("total_patents_found", 0) > 0:
@@ -243,8 +273,18 @@ async def get_analysis_status(analysis_id: str):
                         insights.append("No black box warnings")
                 
                 elif agent_type == "market":
-                    # Market agent still uses mock data, so keep generic insights
-                    insights.append("Market analysis in progress")
+                    market_size = evidence.get("market_size", 0)
+                    if market_size > 0:
+                        insights.append(f"Market size: ${market_size:,.0f}")
+                    cagr = evidence.get("cagr", 0)
+                    if cagr > 0:
+                        insights.append(f"CAGR: {cagr}%")
+                    competitors = evidence.get("competitors", [])
+                    if competitors:
+                        insights.append(f"{len(competitors)} competitors identified")
+                    demand = evidence.get("demand_trends", "")
+                    if demand:
+                        insights.append(f"Demand trend: {demand}")
             
             agents[agent_type] = AgentStatus(
                 agent_type=agent_type,
@@ -264,15 +304,15 @@ async def get_analysis_status(analysis_id: str):
     opportunities = None
     agent_outputs = analysis.get("agent_outputs", {})
     
-    # Extract evidence from each agent
+    # Extract evidence from each agent (nested in 'data' key)
     patent_output = agent_outputs.get("patent", {})
     clinical_output = agent_outputs.get("clinical", {})
     literature_output = agent_outputs.get("literature", {})
     market_output = agent_outputs.get("market", {})
     
-    patent_evidence = patent_output.get("evidence", {}) if patent_output else None
-    clinical_evidence = clinical_output.get("evidence", {}) if clinical_output else None
-    literature_evidence = literature_output.get("evidence", {}) if literature_output else None
+    patent_evidence = patent_output.get("data", {}).get("evidence", {}) if patent_output else None
+    clinical_evidence = clinical_output.get("data", {}).get("evidence", {}) if clinical_output else None
+    literature_evidence = literature_output.get("data", {}).get("evidence", {}) if literature_output else None
     
     if analysis.get("opportunities"):
         opportunities = []
@@ -325,9 +365,10 @@ async def get_analysis_status(analysis_id: str):
     for agent_type in ["market", "patent", "clinical", "literature"]:
         if agent_type in agent_outputs:
             output = agent_outputs[agent_type]
+            agent_data = output.get("data", {})
             agent_outputs_for_response[agent_type] = {
-                "evidence": output.get("evidence", {}),
-                "scores": output.get("scores", {})
+                "evidence": agent_data.get("evidence", {}),
+                "scores": agent_data.get("scores", {})
             }
     
     return AnalysisStatusResponse(
@@ -367,24 +408,50 @@ async def generate_report(analysis_id: str):
 
 
 @app.post("/api/research/upload", response_model=AnalysisResponse)
-async def upload_research_paper(background_tasks: BackgroundTasks):
+async def upload_research_paper(file: UploadFile = File(...)):
     """
-    Start research paper analysis.
-    Returns analysis_id for tracking.
+    Upload a research paper (PDF) for analysis.
+    Extracts text, runs the full research evaluation pipeline.
     """
+    # Validate file type
+    allowed_types = [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Only PDF and DOCX files are accepted.")
+
     analysis_id = str(uuid.uuid4())
-    
-    # Initialize research store (reusing analysis_store for simplicity)
+
+    # Read file bytes
+    file_bytes = await file.read()
+
+    # Extract text from the uploaded document
+    try:
+        from services.document_analysis import extract_text_from_pdf
+        doc_result = await extract_text_from_pdf(file_bytes)
+        extracted_text = doc_result.get("text", "")
+        doc_metadata = doc_result
+    except Exception as e:
+        print(f"Document extraction error: {e}")
+        raise HTTPException(status_code=422, detail=f"Failed to extract text from document: {str(e)}")
+
+    if not extracted_text or len(extracted_text.strip()) < 50:
+        raise HTTPException(status_code=422, detail="Could not extract sufficient text from the document.")
+
+    # Initialize research store
     analysis_store[analysis_id] = {
         "analysis_id": analysis_id,
         "type": "research",
         "status": "processing",
+        "extracted_text": extracted_text,
+        "doc_metadata": doc_metadata,
         "result": None
     }
-    
-    # Run analysis in background
-    asyncio.create_task(run_research_analysis(analysis_id))
-    
+
+    # Run analysis in background with the extracted text
+    asyncio.create_task(run_research_analysis(analysis_id, extracted_text))
+
     return {
         "analysis_id": analysis_id,
         "status": "processing",
@@ -392,19 +459,17 @@ async def upload_research_paper(background_tasks: BackgroundTasks):
     }
 
 
-async def run_research_analysis(analysis_id: str):
+async def run_research_analysis(analysis_id: str, extracted_text: str = ""):
     """Run the research analysis workflow with robust error handling."""
     logs = []
     try:
-        # Step 1: Execute Research Agent
-        # In a real scenario, we'd extract text from the paper here. 
-        # For now, we use the topic as a baseline.
-        research_topic = "General Research Paper Analysis"
+        # Step 1: Execute Research Agent with actual extracted text
+        research_topic = extracted_text[:200] if extracted_text else "General Research Paper Analysis"
         
         result = await research_agent.execute(
             session_id=analysis_id,
             research_topic=research_topic,
-            uploaded_paper=None,
+            uploaded_paper=extracted_text or None,
             context_data={"analysis_id": analysis_id}
         )
         
@@ -460,6 +525,9 @@ async def get_research_status(analysis_id: str):
     
     result = analysis["result"]
     
+    # Use full extracted text from upload if available, else from agent result
+    full_text = analysis.get("extracted_text") or result.get("extracted_text", "")
+    
     return ResearchStatusResponse(
         analysis_id=analysis_id,
         status=analysis["status"],
@@ -468,8 +536,40 @@ async def get_research_status(analysis_id: str):
         annotations=[ResearchAnnotation(**a) for a in result["annotations"]],
         top_opportunities=[ResearchOpportunity(**o) for o in result["top_opportunities"]],
         faculty_recommendations=[FacultyRecommendation(**f) for f in result["faculty_recommendations"]],
-        confidence_level=result["confidence_level"]
+        confidence_level=result["confidence_level"],
+        confidence_result=ConfidenceResult(**result["confidence_result"]) if result.get("confidence_result") else None,
+        extracted_text=full_text
     )
+
+
+@app.get("/api/research/report/{analysis_id}")
+async def download_research_report(analysis_id: str):
+    """Generate and download a PDF report for a research analysis."""
+    if analysis_id not in analysis_store:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    
+    analysis = analysis_store[analysis_id]
+    
+    if analysis.get("status") != "complete":
+        raise HTTPException(status_code=400, detail="Analysis not yet complete")
+    
+    result = analysis["result"]
+    
+    try:
+        from services.research_report_generator import ResearchReportGenerator
+        generator = ResearchReportGenerator()
+        pdf_bytes = generator.generate_report(analysis_id, result)
+        
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="research_report_{analysis_id[:8]}.pdf"'
+            }
+        )
+    except Exception as e:
+        print(f"Error generating report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
 
 
 @app.get("/api/health")

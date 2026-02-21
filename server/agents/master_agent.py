@@ -45,10 +45,11 @@ class MasterAgent:
         self.status = "executing"
         
         # First, run patent, clinical, and literature agents
+        # Pass (session_id=analysis_id, research_topic=query, context_data=workflow_plan)
         independent_agent_tasks = {
-            "patent": self.patent_agent.execute(query, workflow_plan),
-            "clinical": self.clinical_agent.execute(query, workflow_plan),
-            "literature": self.literature_agent.execute(query, workflow_plan)
+            "patent": self.patent_agent.execute(analysis_id, query, context_data=workflow_plan),
+            "clinical": self.clinical_agent.execute(analysis_id, query, context_data=workflow_plan),
+            "literature": self.literature_agent.execute(analysis_id, query, context_data=workflow_plan)
         }
         
         # Run independent agents concurrently
@@ -65,10 +66,11 @@ class MasterAgent:
             })
         
         # Step 4: Run market agent with context from other agents
-        market_result = await self.market_agent.execute(query, {
+        market_context = {
             **workflow_plan,
             "agent_outputs": agent_outputs  # Pass other agents' data
-        })
+        }
+        market_result = await self.market_agent.execute(analysis_id, query, context_data=market_context)
         agent_outputs["market"] = market_result
         Database.save_agent_output(analysis_id, "market", market_result)
         self.workflow_memory["agents_assigned"].append({
@@ -153,10 +155,12 @@ class MasterAgent:
         all_opportunities = []
         
         for agent_type, output in agent_outputs.items():
-            opportunities = output.get("top_opportunities", [])
+            # Agent outputs are nested: {"status": "success", "data": {"top_opportunities": [...]}}
+            agent_data = output.get("data", {})
+            opportunities = agent_data.get("top_opportunities", [])
             for opp in opportunities:
                 opp["source_agent"] = agent_type
-                opp["agent_scores"] = output.get("scores", {})
+                opp["agent_scores"] = agent_data.get("scores", {})
                 all_opportunities.append(opp)
         
         # Group similar opportunities
@@ -168,8 +172,8 @@ class MasterAgent:
             "agent_summary": {
                 agent_type: {
                     "status": "complete",
-                    "opportunities_found": len(output.get("top_opportunities", [])),
-                    "scores": output.get("scores", {})
+                    "opportunities_found": len(output.get("data", {}).get("top_opportunities", [])),
+                    "scores": output.get("data", {}).get("scores", {})
                 }
                 for agent_type, output in agent_outputs.items()
             }

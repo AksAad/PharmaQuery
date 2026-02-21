@@ -39,7 +39,7 @@ export const ResearchUploadModal: React.FC<ResearchUploadModalProps> = ({ isOpen
 
         setIsUploading(true);
         try {
-            const data = await apiClient.uploadResearchPaper();
+            const data = await apiClient.uploadResearchPaper(file);
 
             if (!data || !data.analysis_id) {
                 console.error('Invalid response from server:', data);

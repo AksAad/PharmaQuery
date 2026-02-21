@@ -5,3 +5,5 @@ python-dotenv
 firebase-admin
 pydantic
 reportlab
+PyMuPDF
+python-multipart

@@ -26,33 +26,50 @@ class PatentAPIClient:
         self.rate_limit_delay = 1.0  # Delay between requests to respect rate limits
         self.aggregator = PatentDataAggregator()
     
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def search_patents(self, drug_name: str, indication: str = None) -> Dict[str, Any]:
         """
-        Search for patents using multiple real API sources only.
+        Search for patents using HTTP-based API sources only (no browser automation).
         
-        Tries in order:
-        1. Google Patents (free, accessible)
-        2. USPTO Patent Public Search (if implemented)
-        
-        Returns empty results if no real data is found (no mock fallback).
+        Uses the European Patent Office (EPO) Open Patent Services API
+        and Google Patents via simple HTTP requests.
         """
         try:
-            # Search real APIs only
-            print(f"Searching real patent APIs for: {drug_name} {indication or ''}")
-            aggregated_result = await self.aggregator.search_all_sources(drug_name, indication)
+            print(f"Searching patent APIs for: {drug_name} {indication or ''}")
+            all_patents = []
             
-            # Return real results (even if empty)
-            if aggregated_result.get("total_found", 0) > 0:
-                print(f"Found {aggregated_result['total_found']} patents from real APIs")
-            else:
-                print(f"No patents found from real APIs for: {drug_name}")
+            # Source 1: EPO Open Patent Services (free, REST API)
+            try:
+                epo_patents = await self._search_epo(drug_name, indication)
+                all_patents.extend(epo_patents)
+            except Exception as e:
+                print(f"EPO search failed: {e}")
             
-            return aggregated_result
+            # Source 2: Google Patents via simple HTTP (no Playwright)
+            try:
+                google_patents = await self._search_google_patents_http(drug_name, indication)
+                all_patents.extend(google_patents)
+            except Exception as e:
+                print(f"Google Patents HTTP search failed: {e}")
+            
+            # Deduplicate by patent number
+            seen = set()
+            unique_patents = []
+            for p in all_patents:
+                num = p.get("patent_number", "")
+                if num and num not in seen:
+                    seen.add(num)
+                    unique_patents.append(p)
+            
+            print(f"Found {len(unique_patents)} patents from HTTP APIs")
+            return {
+                "patents": unique_patents,
+                "total_found": len(unique_patents),
+                "sources_used": ["epo", "google_patents_http"],
+                "query": f"{drug_name} {indication or ''}".strip()
+            }
                 
         except Exception as e:
-            print(f"Error fetching patents from real APIs: {e}")
-            # Return empty results instead of mock data
+            print(f"Error fetching patents: {e}")
             return {
                 "patents": [],
                 "total_found": 0,
@@ -60,6 +77,76 @@ class PatentAPIClient:
                 "query": f"{drug_name} {indication or ''}".strip(),
                 "error": str(e)
             }
+    
+    async def _search_epo(self, drug_name: str, indication: str = None) -> List[Dict]:
+        """Search European Patent Office Open Patent Services."""
+        query = f"{drug_name}"
+        if indication:
+            query += f" {indication}"
+        
+        # EPO OPS REST API - published data search
+        url = "https://ops.epo.org/3.2/rest-services/published-data/search"
+        params = {
+            "q": f'ti="{drug_name}" OR ab="{drug_name}"',
+            "Range": "1-20"
+        }
+        
+        patents = []
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            try:
+                response = await client.get(url, params=params, headers={
+                    "Accept": "application/json"
+                })
+                if response.status_code == 200:
+                    data = response.json()
+                    # Parse EPO response
+                    results = data.get("ops:world-patent-data", {}).get("ops:biblio-search", {}).get("ops:search-result", {}).get("ops:publication-reference", [])
+                    if isinstance(results, dict):
+                        results = [results]
+                    for r in results[:20]:
+                        doc_id = r.get("document-id", {})
+                        if isinstance(doc_id, list):
+                            doc_id = doc_id[0] if doc_id else {}
+                        patents.append({
+                            "patent_number": doc_id.get("doc-number", {}).get("$", ""),
+                            "patent_title": f"{drug_name} related patent",
+                            "source": "epo"
+                        })
+            except Exception as e:
+                print(f"EPO API error: {e}")
+        
+        return patents
+    
+    async def _search_google_patents_http(self, drug_name: str, indication: str = None) -> List[Dict]:
+        """Search Google Patents using simple HTTP (no Playwright)."""
+        import re as re_module
+        
+        query = drug_name
+        if indication:
+            query += f" {indication}"
+        
+        url = f"https://patents.google.com/?q={query.replace(' ', '+')}&num=20"
+        
+        patents = []
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            try:
+                response = await client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                })
+                if response.status_code == 200:
+                    # Extract patent numbers from HTML
+                    text = response.text
+                    patent_numbers = re_module.findall(r'US\d{7,8}[A-Z]?\d*', text)
+                    for pnum in list(dict.fromkeys(patent_numbers))[:20]:  # Deduplicate, take 20
+                        patents.append({
+                            "patent_number": pnum,
+                            "patent_title": f"{drug_name} related patent",
+                            "source": "google_patents"
+                        })
+            except Exception as e:
+                print(f"Google Patents HTTP error: {e}")
+        
+        return patents
     
     def parse_patent_data(self, api_response: Dict[str, Any], drug_name: str) -> Dict[str, Any]:
         """

@@ -36,7 +36,7 @@ const Dashboard = () => {
   useLayoutEffect(() => {
     const state = location.state as { analysisId?: string; preserveState?: boolean } | null;
     const savedScrollPosition = sessionStorage.getItem('dashboardScrollPosition');
-    
+
     if (state?.preserveState && savedScrollPosition) {
       const scrollPosition = parseInt(savedScrollPosition, 10);
       // Set scroll position immediately, synchronously before browser paint
@@ -59,10 +59,10 @@ const Dashboard = () => {
   useEffect(() => {
     const savedScrollPosition = sessionStorage.getItem('dashboardScrollPosition');
     if (!savedScrollPosition || !scrollRestoredRef.current) return;
-    
+
     const agentOutputsCount = Object.keys(agentOutputs).length;
     const hasContent = showResults && (opportunities.length > 0 || agentOutputsCount > 0);
-    
+
     if (hasContent) {
       // Re-apply scroll position after content renders to ensure it's correct
       const scrollPosition = parseInt(savedScrollPosition, 10);
@@ -76,7 +76,7 @@ const Dashboard = () => {
         sessionStorage.removeItem('dashboardScrollPosition');
         scrollRestoredRef.current = false;
       }, 50);
-      
+
       return () => clearTimeout(timeoutId);
     }
   }, [showResults, opportunities.length, Object.keys(agentOutputs).length]);
@@ -84,27 +84,27 @@ const Dashboard = () => {
   const restoreAnalysisState = async (id: string): Promise<void> => {
     try {
       const status = await apiClient.getAnalysisStatus(id);
-      
+
       if (status.status === 'complete') {
         setMasterStatus('complete');
         setShowResults(true);
         setCurrentQuery(status.query || '');
-        
+
         if (status.opportunities) {
           setOpportunities(status.opportunities);
         }
         if (status.agent_outputs) {
           setAgentOutputs(status.agent_outputs);
         }
-        
+
         // Restore agent statuses
         const updatedAgents: Record<string, { agentName: string; status: 'idle' | 'running' | 'complete' | 'error'; progress: number; insights: string[] }> = {};
         for (const [key, agentStatus] of Object.entries(status.agents)) {
           updatedAgents[key] = {
             agentName: agentStatus.agent_type === 'market' ? 'Market Insights Agent' :
-                        agentStatus.agent_type === 'patent' ? 'Patent Landscape Agent' :
-                        agentStatus.agent_type === 'clinical' ? 'Clinical Trials Agent' :
-                        'Regulatory & Literature Agent',
+              agentStatus.agent_type === 'patent' ? 'Patent Landscape Agent' :
+                agentStatus.agent_type === 'clinical' ? 'Clinical Trials Agent' :
+                  'Regulatory & Literature Agent',
             status: agentStatus.status as 'idle' | 'running' | 'complete' | 'error',
             progress: agentStatus.progress,
             insights: agentStatus.insights || []
@@ -120,7 +120,7 @@ const Dashboard = () => {
   const pollAnalysisStatus = async (id: string) => {
     try {
       const status = await apiClient.getAnalysisStatus(id);
-      
+
       // Update master status
       if (status.status === 'processing') {
         setMasterStatus('orchestrating');
@@ -141,26 +141,26 @@ const Dashboard = () => {
         toast.error('Analysis failed. Please try again.');
         return;
       }
-      
+
       // Update agent statuses with real insights from API
       const updatedAgents: Record<string, { agentName: string; status: 'idle' | 'running' | 'complete' | 'error'; progress: number; insights: string[] }> = {};
       for (const [key, agentStatus] of Object.entries(status.agents)) {
         updatedAgents[key] = {
           agentName: agentStatus.agent_type === 'market' ? 'Market Insights Agent' :
-                      agentStatus.agent_type === 'patent' ? 'Patent Landscape Agent' :
-                      agentStatus.agent_type === 'clinical' ? 'Clinical Trials Agent' :
-                      'Regulatory & Literature Agent',
+            agentStatus.agent_type === 'patent' ? 'Patent Landscape Agent' :
+              agentStatus.agent_type === 'clinical' ? 'Clinical Trials Agent' :
+                'Regulatory & Literature Agent',
           status: agentStatus.status as 'idle' | 'running' | 'complete' | 'error',
           progress: agentStatus.progress,
           insights: agentStatus.insights || [] // Use real insights from API
         };
       }
       setAgentResults(prev => ({ ...prev, ...updatedAgents }));
-      
+
       // Continue polling if still processing
       if (status.status === 'processing') {
         setTimeout(() => pollAnalysisStatus(id), 2000);
-        }
+      }
     } catch (error) {
       console.error('Error polling status:', error);
       setIsLoading(false);
@@ -173,7 +173,7 @@ const Dashboard = () => {
     setCurrentQuery(query);
     setShowResults(false);
     setOpportunities([]);
-    
+
     // Reset agents
     setAgentResults({
       market: { agentName: 'Market Insights Agent', status: 'idle', progress: 0, insights: [] },
@@ -184,15 +184,15 @@ const Dashboard = () => {
 
     try {
       // Start analysis
-    setMasterStatus('orchestrating');
+      setMasterStatus('orchestrating');
       const response = await apiClient.analyzeQuery(query);
       setAnalysisId(response.analysis_id);
-      
+
       // Start polling for status
       setTimeout(() => pollAnalysisStatus(response.analysis_id), 1000);
     } catch (error) {
       console.error('Error starting analysis:', error);
-    setIsLoading(false);
+      setIsLoading(false);
       setMasterStatus('idle');
       toast.error('Failed to start analysis. Please check if the backend server is running.');
     }
@@ -219,7 +219,7 @@ const Dashboard = () => {
       toast.error('No analysis to export');
       return;
     }
-    
+
     try {
       toast.info('Generating PDF report...');
       const blob = await apiClient.downloadReport(analysisId);
@@ -275,7 +275,7 @@ const Dashboard = () => {
             {masterStatus !== 'idle' && (
               <div className="mt-8">
                 <h2 className="text-lg font-semibold mb-4">Agent Workflow</h2>
-                
+
                 <div className="grid lg:grid-cols-3 gap-6">
                   {/* Master Agent */}
                   <div className="lg:col-span-1">
@@ -291,7 +291,7 @@ const Dashboard = () => {
                       <AgentCard type="clinical" result={agentResults.clinical} />
                       <AgentCard type="literature" result={agentResults.literature} />
                     </div>
-                    
+
                     {/* Pros and Cons - Under the 4 agent cards */}
                     {showResults && opportunities.length > 0 && (() => {
                       // Aggregate unique pros and cons from all opportunities
@@ -299,7 +299,7 @@ const Dashboard = () => {
                       const prosMap = new Map<string, string>();
                       const consMap = new Map<string, string>();
                       const risksMap = new Map<string, string>();
-                      
+
                       opportunities.forEach(opp => {
                         opp.pros?.forEach(pro => {
                           const normalized = pro.trim();
@@ -320,11 +320,11 @@ const Dashboard = () => {
                           }
                         });
                       });
-                      
+
                       const allPros = Array.from(prosMap.values());
                       const allCons = Array.from(consMap.values());
                       const allRisks = Array.from(risksMap.values());
-                      
+
                       return (
                         <div className="mt-6 grid md:grid-cols-2 gap-4 pt-6 border-t border-border">
                           {/* Pros */}
@@ -401,7 +401,7 @@ const Dashboard = () => {
                     } else if (agentType === 'literature') {
                       score = scores.literature_score;
                     }
-                    
+
                     return (
                       <AgentOutputCard
                         key={agentType}
@@ -437,11 +437,11 @@ const Dashboard = () => {
                 <div className="grid gap-6">
                   {opportunities.length > 0 ? (
                     opportunities.map((opportunity, index) => (
-                    <OpportunityCard 
-                      key={opportunity.id} 
-                      opportunity={opportunity} 
-                      rank={index + 1} 
-                    />
+                      <OpportunityCard
+                        key={opportunity.id}
+                        opportunity={opportunity}
+                        rank={index + 1}
+                      />
                     ))
                   ) : (
                     <div className="text-center py-12 text-muted-foreground">

@@ -27,9 +27,6 @@ class ResearchAgent(BaseAgent):
             if uploaded_paper and isinstance(uploaded_paper, str):
                 input_text = uploaded_paper
             
-            # Simulate processing time
-            await asyncio.sleep(1)
-            
             # 1. Generate Research Quality Score (IEEE Level)
             logs.append("Evaluating paper quality dimensions")
             score_data = self.evaluate_paper(input_text)

@@ -1,5 +1,7 @@
 /** API client for backend communication */
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// In dev, Vite proxy forwards /api to backend — use empty base.
+// In production, set VITE_API_URL to the backend origin.
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 export interface QueryRequest {
   query: string;
@@ -171,16 +173,40 @@ class ApiClient {
   }
 
   // Research Specific Methods
-  async uploadResearchPaper(): Promise<AnalysisResponse> {
+  async uploadResearchPaper(file: File): Promise<AnalysisResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+
     const response = await fetch(`${this.baseUrl}/api/research/upload`, {
       method: 'POST',
+      body: formData,
+      // Do NOT set Content-Type header — browser sets multipart boundary automatically
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to upload paper: ${response.statusText}`);
+      const errorData = await response.json().catch(() => null);
+      throw new Error(errorData?.detail || `Failed to upload paper: ${response.statusText}`);
     }
 
     return response.json();
+  }
+
+  async downloadResearchReport(analysisId: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/api/research/report/${analysisId}`);
+
+    if (!response.ok) {
+      throw new Error(`Failed to download report: ${response.statusText}`);
+    }
+
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `research_report_${analysisId.slice(0, 8)}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
   }
 
   async getResearchStatus(analysisId: string): Promise<ResearchStatusResponse> {
@@ -207,8 +233,12 @@ class ApiClient {
 export interface ResearchAnnotation {
   tag: string;
   content: string;
+  tooltip?: string;
   reasoning: string;
+  suggestion?: string;
   position: { start: number; end: number };
+  source_name?: string;
+  source_link?: string;
 }
 
 export interface ResearchOpportunity {
@@ -218,6 +248,9 @@ export interface ResearchOpportunity {
   relevance_score: number;
   difficulty_score: number;
   description: string;
+  why_matched?: string;
+  category?: string;
+  deadline?: string;
   link: string;
 }
 
@@ -226,7 +259,17 @@ export interface FacultyRecommendation {
   inst: string;
   area: string;
   why: string;
+  match_score?: number;
   link: string;
+}
+
+export interface ConfidenceResult {
+  level: string;
+  model_certainty: number;
+  data_completeness: number;
+  document_clarity: number;
+  signal_consistency: number;
+  summary: string;
 }
 
 export interface ResearchStatusResponse {
@@ -238,6 +281,8 @@ export interface ResearchStatusResponse {
   top_opportunities: ResearchOpportunity[];
   faculty_recommendations: FacultyRecommendation[];
   confidence_level: string;
+  confidence_result?: ConfidenceResult;
+  extracted_text?: string;
 }
 
 export const apiClient = new ApiClient();

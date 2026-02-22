@@ -5,4 +5,9 @@ python-dotenv
 firebase-admin
 pydantic
 reportlab
+<<<<<<< HEAD
 playwright
+=======
+PyMuPDF
+python-multipart
+>>>>>>> 76504fc1dfbada5f52fca01e047c169a0a14ac67

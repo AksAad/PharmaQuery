@@ -39,6 +39,7 @@ class MasterAgent:
             ]
         }
         
+<<<<<<< HEAD
         # Generate fast heuristic-based results instead of waiting for external APIs
         # This fulfills the "show visible output immediately" requirement
         agent_outputs = {
@@ -84,6 +85,57 @@ class MasterAgent:
         for atype, res in agent_outputs.items():
             Database.save_agent_output(analysis_id, atype, res)
             
+=======
+        # Save workflow state
+        Database.save_master_workflow(analysis_id, self.workflow_memory)
+        
+        # Step 2: Execute worker agents in parallel (except market which needs other agents' data)
+        self.status = "executing"
+        
+        # First, run patent, clinical, and literature agents
+        # Pass (session_id=analysis_id, research_topic=query, context_data=workflow_plan)
+        independent_agent_tasks = {
+            "patent": self.patent_agent.execute(analysis_id, query, context_data=workflow_plan),
+            "clinical": self.clinical_agent.execute(analysis_id, query, context_data=workflow_plan),
+            "literature": self.literature_agent.execute(analysis_id, query, context_data=workflow_plan)
+        }
+        
+        # Run independent agents concurrently
+        independent_results = await asyncio.gather(*independent_agent_tasks.values())
+        
+        # Step 3: Save independent agent outputs
+        agent_outputs = {}
+        for i, (agent_type, result) in enumerate(zip(independent_agent_tasks.keys(), independent_results)):
+            agent_outputs[agent_type] = result
+            Database.save_agent_output(analysis_id, agent_type, result)
+            self.workflow_memory["agents_assigned"].append({
+                "agent": agent_type,
+                "status": "complete"
+            })
+        
+        # Step 4: Run market agent with context from other agents
+        market_context = {
+            **workflow_plan,
+            "agent_outputs": agent_outputs  # Pass other agents' data
+        }
+        market_result = await self.market_agent.execute(analysis_id, query, context_data=market_context)
+        agent_outputs["market"] = market_result
+        Database.save_agent_output(analysis_id, "market", market_result)
+        self.workflow_memory["agents_assigned"].append({
+            "agent": "market",
+            "status": "complete"
+        })
+        
+        # Step 5: Aggregate results
+        self.status = "aggregating"
+        aggregated = self._aggregate_results(query, agent_outputs)
+        
+        # Update workflow memory
+        self.workflow_memory["status"] = "complete"
+        self.workflow_memory["aggregated_results"] = aggregated
+        Database.save_master_workflow(analysis_id, self.workflow_memory)
+        
+>>>>>>> 76504fc1dfbada5f52fca01e047c169a0a14ac67
         self.status = "complete"
         aggregated = self._aggregate_results(query, agent_outputs)
         
@@ -153,6 +205,7 @@ class MasterAgent:
         all_opportunities = []
         agent_summary = {}
         
+<<<<<<< HEAD
         for agent_type, result in agent_outputs.items():
             if result.get("status") == "success":
                 data = result.get("data", {})
@@ -173,6 +226,16 @@ class MasterAgent:
                     "opportunities_found": 0,
                     "scores": {}
                 }
+=======
+        for agent_type, output in agent_outputs.items():
+            # Agent outputs are nested: {"status": "success", "data": {"top_opportunities": [...]}}
+            agent_data = output.get("data", {})
+            opportunities = agent_data.get("top_opportunities", [])
+            for opp in opportunities:
+                opp["source_agent"] = agent_type
+                opp["agent_scores"] = agent_data.get("scores", {})
+                all_opportunities.append(opp)
+>>>>>>> 76504fc1dfbada5f52fca01e047c169a0a14ac67
         
         # Group similar opportunities
         grouped = self._group_opportunities(all_opportunities)
@@ -180,7 +243,18 @@ class MasterAgent:
         return {
             "total_opportunities": len(grouped),
             "opportunities": grouped,
+<<<<<<< HEAD
             "agent_summary": agent_summary
+=======
+            "agent_summary": {
+                agent_type: {
+                    "status": "complete",
+                    "opportunities_found": len(output.get("data", {}).get("top_opportunities", [])),
+                    "scores": output.get("data", {}).get("scores", {})
+                }
+                for agent_type, output in agent_outputs.items()
+            }
+>>>>>>> 76504fc1dfbada5f52fca01e047c169a0a14ac67
         }
     
     def _group_opportunities(self, opportunities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
